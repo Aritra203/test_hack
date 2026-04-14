@@ -1,47 +1,25 @@
 from __future__ import annotations
 
-from functools import lru_cache
-from pathlib import Path
-from typing import Any, Type
+import io
 
-from fastapi import HTTPException, status
+import pytesseract
+from PIL import Image, UnidentifiedImageError
 
 from backend.config.settings import settings
-from backend.utils.module_loader import load_module_from_path
-
-
-AI_SERVICES_DIR = Path(__file__).resolve().parents[2] / "ai-services"
-OCR_MODULE_PATH = AI_SERVICES_DIR / "ocr.py"
-
-
-def _get_ocr_extractor_class() -> Type[Any]:
-    module = load_module_from_path("ai_services_ocr", OCR_MODULE_PATH)
-    ocr_cls = getattr(module, "OCRExtractor", None)
-    if ocr_cls is None:
-        raise RuntimeError("OCRExtractor class not found in ai-services/ocr.py")
-    return ocr_cls
 
 
 class OCRService:
     def __init__(self) -> None:
-        ocr_extractor_cls = _get_ocr_extractor_class()
-        self._extractor = ocr_extractor_cls(tesseract_cmd=settings.tesseract_cmd)
+        if settings.tesseract_cmd:
+            pytesseract.pytesseract.tesseract_cmd = settings.tesseract_cmd
 
-    def extract_text_from_image_url(self, image_url: str) -> str:
+    def extract_text_from_bytes(self, content: bytes) -> str:
         try:
-            return self._extractor.extract_text_from_image_url(image_url)
-        except RuntimeError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=str(exc),
-            ) from exc
-        except Exception as exc:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=f"OCR failed for supplied image: {exc}",
-            ) from exc
+            image = Image.open(io.BytesIO(content))
+        except UnidentifiedImageError as exc:
+            raise ValueError("Uploaded file is not a valid image.") from exc
+        return " ".join(pytesseract.image_to_string(image).split())
 
 
-@lru_cache(maxsize=1)
-def get_ocr_service() -> OCRService:
-    return OCRService()
+ocr_service = OCRService()
+

@@ -9,6 +9,7 @@ from backend.config.cloudinary_config import init_cloudinary
 from backend.config.database import db_manager
 from backend.config.settings import settings
 from backend.routes.analysis import router as analysis_router
+from backend.routes.analytics import router as analytics_router
 from backend.routes.fir import router as fir_router
 
 
@@ -36,8 +37,10 @@ app.add_middleware(
 
 app.include_router(analysis_router)
 app.include_router(fir_router)
+app.include_router(analytics_router)
 
 
 @app.get("/health")
 async def health_check() -> dict:
-    return {"status": "ok", "service": settings.project_name}
+    return {"status": "ok", "service": settings.project_name, "version": settings.api_version}
+

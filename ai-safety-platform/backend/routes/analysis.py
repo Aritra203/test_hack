@@ -1,84 +1,83 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, File, HTTPException, UploadFile, status
-from starlette.concurrency import run_in_threadpool
 
 from backend.config.database import db_manager
 from backend.config.settings import settings
-from backend.models.db_models import build_evidence_record, build_text_analysis_record
+from backend.models.db_models import build_analysis_record
 from backend.models.schemas import ImageAnalysisResponse, TextAnalysisRequest, TextAnalysisResponse
 from backend.services.cloudinary_service import cloudinary_upload_service
-from backend.services.ocr_service import get_ocr_service
-from backend.services.toxicity_service import get_toxicity_service
-from backend.utils.risk import classify_risk
+from backend.services.ocr_service import ocr_service
+from backend.services.toxicity_service import get_safety_analysis_service
 
 
 router = APIRouter(tags=["analysis"])
-
-
-toxicity_service = get_toxicity_service()
-ocr_service = get_ocr_service()
+analysis_service = get_safety_analysis_service()
 
 
 @router.post("/analyze-text", response_model=TextAnalysisResponse)
 async def analyze_text(payload: TextAnalysisRequest) -> TextAnalysisResponse:
-    toxicity_score = await run_in_threadpool(toxicity_service.analyze_text, payload.text)
-    risk_label = classify_risk(toxicity_score)
+    analyzed_text = payload.text.strip()
+    if not analyzed_text:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Text cannot be empty.")
 
-    database = db_manager.get_database()
-    record = build_text_analysis_record(
-        text=payload.text,
-        toxicity_score=toxicity_score,
-        risk_label=risk_label,
+    result = analysis_service.analyze(
+        text=analyzed_text,
+        previous_messages=[item.model_dump() for item in payload.previous_messages],
+        language_hint=payload.language_hint,
+        subject_is_minor=payload.subject_is_minor,
     )
-    insert_result = await database["text_analyses"].insert_one(record)
+
+    record = build_analysis_record(source_type="text", analyzed_text=analyzed_text, result=result)
+    insert_result = await db_manager.get_database()["analyses"].insert_one(record)
+    created_at = record["created_at"]
 
     return TextAnalysisResponse(
         analysis_id=str(insert_result.inserted_id),
-        analyzed_text=payload.text,
-        toxicity_score=toxicity_score,
-        risk_label=risk_label,
+        analyzed_text=analyzed_text,
+        result=result,
+        created_at=created_at,
     )
 
 
 @router.post("/analyze-image", response_model=ImageAnalysisResponse)
-async def analyze_image(file: UploadFile = File(...)) -> ImageAnalysisResponse:
+async def analyze_image(
+    file: UploadFile = File(...),
+    subject_is_minor: bool = False,
+    language_hint: str | None = None,
+) -> ImageAnalysisResponse:
     if not file.content_type or not file.content_type.startswith("image/"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Only image uploads are supported for OCR analysis.",
-        )
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Only image uploads are supported.")
 
-    upload_result = await cloudinary_upload_service.upload_fastapi_file(
-        file,
-        folder_override=f"{settings.cloudinary_folder}/analyzed-images",
+    upload = await cloudinary_upload_service.upload_fastapi_file(
+        file=file,
+        folder_override=f"{settings.cloudinary_folder}/images",
+    )
+    extracted_text = ocr_service.extract_text_from_bytes(upload.content)
+
+    result = analysis_service.analyze(
+        text=extracted_text,
+        previous_messages=[],
+        language_hint=language_hint,
+        subject_is_minor=subject_is_minor,
     )
 
-    extracted_text = await run_in_threadpool(
-        ocr_service.extract_text_from_image_url,
-        upload_result.url,
+    record = build_analysis_record(
+        source_type="image",
+        analyzed_text=extracted_text,
+        result=result,
+        cloudinary_url=upload.url,
+        cloudinary_public_id=upload.public_id,
     )
-
-    if extracted_text.strip():
-        toxicity_score = await run_in_threadpool(toxicity_service.analyze_text, extracted_text)
-    else:
-        toxicity_score = 0.0
-
-    risk_label = classify_risk(toxicity_score)
-
-    database = db_manager.get_database()
-    evidence_record = build_evidence_record(
-        extracted_text=extracted_text,
-        toxicity_score=toxicity_score,
-        cloudinary_url=upload_result.url,
-    )
-    insert_result = await database["evidence"].insert_one(evidence_record)
+    insert_result = await db_manager.get_database()["analyses"].insert_one(record)
+    created_at = record["created_at"]
 
     return ImageAnalysisResponse(
         evidence_id=str(insert_result.inserted_id),
         extracted_text=extracted_text,
-        toxicity_score=toxicity_score,
-        risk_label=risk_label,
-        cloudinary_url=upload_result.url,
-        cloudinary_public_id=upload_result.public_id,
+        cloudinary_url=upload.url,
+        cloudinary_public_id=upload.public_id,
+        result=result,
+        created_at=created_at,
     )
+

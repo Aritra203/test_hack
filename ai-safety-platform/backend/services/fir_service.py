@@ -2,138 +2,123 @@ from __future__ import annotations
 
 import re
 from datetime import datetime, timezone
-from importlib import import_module
 from io import BytesIO
 
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
-def _load_reportlab():
-    try:
-        colors_module = import_module("reportlab.lib.colors")
-        pagesizes_module = import_module("reportlab.lib.pagesizes")
-        styles_module = import_module("reportlab.lib.styles")
-        platypus_module = import_module("reportlab.platypus")
-    except ModuleNotFoundError as exc:
-        raise RuntimeError(
-            "reportlab is not installed. Install backend requirements before generating FIR PDFs."
-        ) from exc
-
-    return colors_module, pagesizes_module, styles_module, platypus_module
+from backend.models.schemas import AnalysisResultPayload, FIRGenerationRequest
 
 
 class FIRService:
-    LEGAL_REFERENCES = [
-        ("IT Act 2000 - Section 66C", "Identity theft and misuse of digital credentials."),
-        ("IT Act 2000 - Section 67", "Publishing or transmitting obscene content in electronic form."),
-        ("IT Act 2000 - Section 67B", "Child sexual abuse material and related exploitation."),
-        ("IPC Section 354D", "Cyber stalking and repeated online harassment."),
-        ("IPC Section 499/500", "Defamation through digital communication."),
-        ("IPC Section 509", "Insulting the modesty of a person through words/gestures/messages."),
-    ]
-
-    def build_filename(self, username: str) -> str:
-        cleaned = re.sub(r"[^a-zA-Z0-9_-]+", "_", username).strip("_").lower() or "citizen"
+    def build_filename(self, complainant_name: str) -> str:
+        safe = re.sub(r"[^a-zA-Z0-9_-]+", "_", complainant_name).strip("_").lower() or "citizen"
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
-        return f"fir_{cleaned}_{timestamp}.pdf"
+        return f"fir_{safe}_{timestamp}.pdf"
 
     def generate_pdf(
         self,
-        username: str,
-        incident_description: str,
-        evidence_notes: str | None,
-        evidence_url: str | None,
+        payload: FIRGenerationRequest,
+        analysis: AnalysisResultPayload,
+        evidence_urls: list[str],
     ) -> bytes:
-        colors_module, pagesizes_module, styles_module, platypus_module = _load_reportlab()
-        a4_page = getattr(pagesizes_module, "A4")
-        paragraph_style_cls = getattr(styles_module, "ParagraphStyle")
-        get_sample_style_sheet = getattr(styles_module, "getSampleStyleSheet")
-        paragraph_cls = getattr(platypus_module, "Paragraph")
-        simple_doc_template_cls = getattr(platypus_module, "SimpleDocTemplate")
-        spacer_cls = getattr(platypus_module, "Spacer")
-        table_cls = getattr(platypus_module, "Table")
-        table_style_cls = getattr(platypus_module, "TableStyle")
-
-        buffer = BytesIO()
-
-        doc = simple_doc_template_cls(
-            buffer,
-            pagesize=a4_page,
-            leftMargin=40,
-            rightMargin=40,
-            topMargin=36,
-            bottomMargin=36,
-        )
-
-        styles = get_sample_style_sheet()
-        title_style = paragraph_style_cls(
-            "FIRTitle",
+        styles = getSampleStyleSheet()
+        title_style = ParagraphStyle(
+            "Title",
             parent=styles["Title"],
             fontSize=18,
-            spaceAfter=10,
-            textColor=colors_module.HexColor("#1f2937"),
+            textColor=colors.HexColor("#0f172a"),
+            spaceAfter=12,
         )
-        body_style = paragraph_style_cls(
+        body_style = ParagraphStyle(
             "Body",
             parent=styles["BodyText"],
-            leading=16,
-            spaceAfter=10,
+            fontSize=10,
+            leading=15,
+            spaceAfter=8,
         )
 
-        submitted_at = datetime.now(timezone.utc).strftime("%d %b %Y, %H:%M UTC")
+        buffer = BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=A4, leftMargin=32, rightMargin=32, topMargin=28, bottomMargin=28)
+        story = []
 
-        story = [
-            paragraph_cls("First Information Report (Cyber Abuse)", title_style),
-            paragraph_cls(f"<b>Complainant Name:</b> {username}", body_style),
-            paragraph_cls(f"<b>Submission Time:</b> {submitted_at}", body_style),
-            spacer_cls(1, 8),
-            paragraph_cls("<b>Incident Description</b>", styles["Heading3"]),
-            paragraph_cls(incident_description, body_style),
-            spacer_cls(1, 6),
-            paragraph_cls("<b>Evidence Information</b>", styles["Heading3"]),
-            paragraph_cls(f"<b>Evidence Notes:</b> {evidence_notes or 'Not provided'}", body_style),
-            paragraph_cls(f"<b>Evidence URL:</b> {evidence_url or 'Not provided'}", body_style),
-            spacer_cls(1, 6),
-            paragraph_cls("<b>Applicable Legal Sections (Reference)</b>", styles["Heading3"]),
-        ]
+        story.append(Paragraph("Smart FIR Report - Cyber Crime", title_style))
+        story.append(Paragraph(f"<b>Complainant:</b> {payload.complainant_name}", body_style))
+        story.append(Paragraph(f"<b>Contact:</b> {payload.complainant_contact}", body_style))
+        story.append(Paragraph(f"<b>Location:</b> {payload.location}", body_style))
+        story.append(Paragraph(f"<b>Incident Time:</b> {payload.incident_datetime.isoformat()}", body_style))
+        story.append(Paragraph(f"<b>Subject is Minor:</b> {'Yes' if payload.subject_is_minor else 'No'}", body_style))
+        story.append(Spacer(1, 8))
 
-        table_data = [["Act / Section", "Description"]] + [list(item) for item in self.LEGAL_REFERENCES]
-        table = table_cls(table_data, colWidths=[170, 320])
-        table.setStyle(
-            table_style_cls(
+        story.append(Paragraph("<b>Incident Description</b>", styles["Heading3"]))
+        story.append(Paragraph(payload.incident_description, body_style))
+        if payload.accused_details:
+            story.append(Paragraph(f"<b>Accused Details:</b> {payload.accused_details}", body_style))
+        if payload.additional_notes:
+            story.append(Paragraph(f"<b>Additional Notes:</b> {payload.additional_notes}", body_style))
+        story.append(Spacer(1, 8))
+
+        story.append(Paragraph("<b>AI Analysis Summary</b>", styles["Heading3"]))
+        story.append(Paragraph(f"<b>Risk Level:</b> {analysis.risk_level}", body_style))
+        story.append(Paragraph(f"<b>Toxicity Score:</b> {analysis.toxicity_score}", body_style))
+        story.append(Paragraph(f"<b>Detected Language:</b> {analysis.detected_language}", body_style))
+        story.append(Paragraph(f"<b>Escalation Detected:</b> {'Yes' if analysis.escalation_detected else 'No'}", body_style))
+        story.append(Paragraph(f"<b>Context Summary:</b> {analysis.context_summary}", body_style))
+        if analysis.grooming_signals:
+            story.append(Paragraph(f"<b>Grooming Signals:</b> {', '.join(analysis.grooming_signals)}", body_style))
+        story.append(Spacer(1, 8))
+
+        label_table = [["Label", "Score"]] + [[lbl.label, f"{lbl.score:.4f}"] for lbl in analysis.labels]
+        t1 = Table(label_table, colWidths=[220, 120])
+        t1.setStyle(
+            TableStyle(
                 [
-                    ("BACKGROUND", (0, 0), (-1, 0), colors_module.HexColor("#111827")),
-                    ("TEXTCOLOR", (0, 0), (-1, 0), colors_module.whitesmoke),
-                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                    ("ALIGN", (0, 0), (-1, -1), "LEFT"),
-                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                    ("GRID", (0, 0), (-1, -1), 0.5, colors_module.HexColor("#d1d5db")),
-                    (
-                        "ROWBACKGROUNDS",
-                        (0, 1),
-                        (-1, -1),
-                        [colors_module.whitesmoke, colors_module.HexColor("#f9fafb")],
-                    ),
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1e293b")),
+                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                    ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#cbd5e1")),
+                    ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.HexColor("#f8fafc"), colors.HexColor("#f1f5f9")]),
                 ]
             )
         )
+        story.append(t1)
+        story.append(Spacer(1, 8))
 
-        story.append(table)
-        story.append(spacer_cls(1, 12))
+        law_table = [["Section", "Law", "Rationale"]] + [
+            [sec.section, sec.law, sec.rationale] for sec in analysis.legal_sections
+        ]
+        t2 = Table(law_table, colWidths=[90, 120, 230])
+        t2.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#0f172a")),
+                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                    ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#cbd5e1")),
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.HexColor("#ffffff"), colors.HexColor("#f8fafc")]),
+                ]
+            )
+        )
+        story.append(Paragraph("<b>Applicable Legal Sections</b>", styles["Heading3"]))
+        story.append(t2)
+        story.append(Spacer(1, 8))
+
+        story.append(Paragraph("<b>Evidence Links (Cloudinary)</b>", styles["Heading3"]))
+        for idx, url in enumerate(evidence_urls, start=1):
+            story.append(Paragraph(f"{idx}. {url}", body_style))
+
+        story.append(Spacer(1, 8))
         story.append(
-            paragraph_cls(
-                "This report has been generated by AI Safety & Smart FIR Platform and should be verified by law enforcement authorities.",
-                paragraph_style_cls(
-                    "Disclaimer",
-                    parent=styles["Italic"],
-                    textColor=colors_module.HexColor("#4b5563"),
-                    fontSize=9,
-                ),
+            Paragraph(
+                "This AI-generated FIR draft is intended for legal support and must be reviewed by law enforcement.",
+                ParagraphStyle("Disclaimer", parent=styles["Italic"], fontSize=9, textColor=colors.HexColor("#475569")),
             )
         )
 
         doc.build(story)
-        pdf_bytes = buffer.getvalue()
-        buffer.close()
-        return pdf_bytes
+        return buffer.getvalue()
 
 
 fir_service = FIRService()
+
