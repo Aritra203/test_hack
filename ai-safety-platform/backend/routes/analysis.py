@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, File, HTTPException, UploadFile, status
+from pydantic import HttpUrl, TypeAdapter
 
 from backend.config.database import db_manager
 from backend.config.settings import settings
@@ -13,6 +14,7 @@ from backend.services.toxicity_service import get_safety_analysis_service
 
 router = APIRouter(tags=["analysis"])
 analysis_service = get_safety_analysis_service()
+http_url_adapter = TypeAdapter(HttpUrl)
 
 
 @router.post("/analyze-text", response_model=TextAnalysisResponse)
@@ -75,7 +77,7 @@ async def analyze_image(
     return ImageAnalysisResponse(
         evidence_id=str(insert_result.inserted_id),
         extracted_text=extracted_text,
-        cloudinary_url=upload.url,
+        cloudinary_url=http_url_adapter.validate_python(upload.url),
         cloudinary_public_id=upload.public_id,
         result=result,
         created_at=created_at,

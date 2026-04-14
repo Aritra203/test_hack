@@ -31,7 +31,7 @@ class ToxicityAnalyzer:
         self._classifier = pipeline(
             task="text-classification",
             model=model_name,
-            return_all_scores=True,
+            top_k=None,
         )
 
     def _ml_score(self, text: str) -> float:

@@ -14,15 +14,13 @@ from backend.models.schemas import FIRGenerationRequest, FIRGenerationResponse, 
 from backend.services.fir_service import fir_service
 from backend.services.toxicity_service import get_safety_analysis_service
 
+try:
+    from backend.workers.celery_app import celery_app
+except ModuleNotFoundError:
+    celery_app = None
+
 
 router = APIRouter(tags=["fir"])
-
-try:
-    from backend.workers.tasks import generate_fir_pdf  # type: ignore
-    CELERY_AVAILABLE = True
-except ModuleNotFoundError:
-    generate_fir_pdf = None
-    CELERY_AVAILABLE = False
 
 
 @router.post("/generate-fir", response_model=FIRGenerationResponse)
@@ -40,8 +38,11 @@ async def generate_fir(payload: FIRGenerationRequest) -> FIRGenerationResponse:
         }
     )
 
-    if CELERY_AVAILABLE and generate_fir_pdf is not None:
-        generate_fir_pdf.delay(payload.model_dump(mode="json"), evidence_urls, job_id)
+    if celery_app is not None:
+        celery_app.send_task(
+            "generate_fir_pdf",
+            args=[payload.model_dump(mode="json"), evidence_urls, job_id],
+        )
     else:
         analysis = get_safety_analysis_service().analyze(
             text=payload.incident_description,
